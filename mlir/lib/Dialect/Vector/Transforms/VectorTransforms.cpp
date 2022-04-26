@@ -850,9 +850,29 @@ struct MultiReduceToContract
                                 PatternRewriter &rewriter) const override {
     if (reduceOp.getKind() != vector::CombiningKind::ADD)
       return failure();
-    Operation *mulOp = reduceOp.getSource().getDefiningOp();
-    if (!mulOp || !isa<arith::MulIOp, arith::MulFOp>(mulOp))
+    Operation *parentOp = reduceOp.getSource().getDefiningOp();
+
+    // We allow for skipping a single arithmetic cast operation which is
+    // extending the multiply result type to the accumulation result type. By
+    // skipping over the cast operation, the cast operation will be eliminated.
+    // However, it is implicit in the contract operation when the accumulating
+    // operand is a wider type.
+    auto isMulOp = [](Operation *o) {
+      return isa<arith::MulIOp, arith::MulFOp>(o);
+    };
+    auto isWideningCastOp = [](Operation *o) {
+      return isa<arith::ExtFOp, arith::ExtSIOp, arith::ExtUIOp>(o);
+    };
+    Operation *mulOp{nullptr};
+    if (isMulOp(parentOp)) {
+      mulOp = parentOp;
+    } else if (isWideningCastOp(parentOp)) {
+      mulOp = parentOp->getOperand(0).getDefiningOp();
+    }
+
+    if (mulOp == nullptr || !isMulOp(mulOp))
       return failure();
+
     SmallVector<bool> reductionMask = reduceOp.getReductionMask();
     auto srcMap = rewriter.getMultiDimIdentityMap(reductionMask.size());
     SmallVector<AffineExpr> exprs;
@@ -870,8 +890,12 @@ struct MultiReduceToContract
     Value zero = rewriter.create<arith::ConstantOp>(
         reduceOp.getLoc(), reduceOp.getDestType(),
         rewriter.getZeroAttr(reduceOp.getDestType()));
+
+    Value lhs = mulOp->getOperand(0);
+    Value rhs = mulOp->getOperand(1);
+
     rewriter.replaceOpWithNewOp<mlir::vector::ContractionOp>(
-        reduceOp, mulOp->getOperand(0), mulOp->getOperand(1), zero,
+        reduceOp, lhs, rhs, zero,
         rewriter.getAffineMapArrayAttr({srcMap, srcMap, dstMap}),
         rewriter.getStrArrayAttr(iteratorTypes));
     return success();
