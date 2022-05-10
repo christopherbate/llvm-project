@@ -168,6 +168,7 @@ struct TestSCFPipeliningPass
     RewritePatternSet patterns(&getContext());
     mlir::scf::PipeliningOption options;
     options.getScheduleFn = getSchedule;
+    options.peelEpilogue = true;
     if (annotatePipeline)
       options.annotateFn = annotate;
     scf::populateSCFLoopPipeliningPatterns(patterns, options);

@@ -41,6 +41,8 @@ protected:
   int64_t lb;
   int64_t step;
   PipeliningOption::AnnotationlFnType annotateFn = nullptr;
+  PipeliningOption::DummyTypeCreaterFnType dummyTypeCreatorFn = nullptr;
+  bool peelEpilogue{true};
 
   // When peeling the kernel we generate several version of each value for
   // different stage of the prologue. This map tracks the mapping between
@@ -81,6 +83,13 @@ public:
 bool LoopPipelinerInternal::initializeLoopInfo(
     ForOp op, const PipeliningOption &options) {
   forOp = op;
+  peelEpilogue = options.peelEpilogue;
+
+  if (!peelEpilogue && options.dummyTypeCreatorFn == nullptr)
+    return false;
+
+  dummyTypeCreatorFn = options.dummyTypeCreatorFn;
+
   auto upperBoundCst =
       forOp.getUpperBound().getDefiningOp<arith::ConstantIndexOp>();
   auto lowerBoundCst =
@@ -228,8 +237,8 @@ scf::ForOp LoopPipelinerInternal::createKernelLoop(
 
   // Create the new kernel loop. Since we need to peel `numStages - 1`
   // iteration we change the upper bound to remove those iterations.
-  Value newUb = rewriter.create<arith::ConstantIndexOp>(forOp.getLoc(),
-                                                        ub - maxStage * step);
+  Value newUb = rewriter.create<arith::ConstantIndexOp>(
+      forOp.getLoc(), peelEpilogue ? ub - maxStage * step : ub);
   auto newForOp =
       rewriter.create<scf::ForOp>(forOp.getLoc(), forOp.getLowerBound(), newUb,
                                   forOp.getStep(), newLoopArg);
@@ -254,7 +263,32 @@ void LoopPipelinerInternal::createKernel(
   }
   for (Operation *op : opOrder) {
     int64_t useStage = stages[op];
-    auto *newOp = rewriter.clone(*op, mapping);
+    Operation *newOp;
+    rewriter.setInsertionPointToEnd(&newForOp.getLoopBody().front());
+    if (!peelEpilogue && useStage == 0) {
+      Value cond = rewriter.create<arith::CmpIOp>(
+          op->getLoc(), arith::CmpIPredicate::slt, newForOp.getInductionVar(),
+          rewriter.create<arith::ConstantIndexOp>(op->getLoc(),
+                                                  ub - maxStage * step));
+      scf::IfOp ifOp =
+          rewriter.create<scf::IfOp>(op->getLoc(), op->getResultTypes(), cond,
+                                     /*hasElseRegion=*/true);
+      rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
+      newOp = rewriter.clone(*op, mapping);
+      rewriter.create<scf::YieldOp>(op->getLoc(), newOp->getResults());
+
+      auto builder = ifOp.getElseBodyBuilder();
+      auto resultType = newOp->getResultTypes()[0];
+      Value dummy = dummyTypeCreatorFn(builder, op->getLoc(), resultType);
+      builder.create<scf::YieldOp>(op->getLoc(), dummy);
+
+      // Remap the original op result values to the new if op results.I
+      mapping.map(op->getResults(), ifOp.getResults());
+    } else {
+      rewriter.setInsertionPointToEnd(&newForOp.getLoopBody().front());
+      newOp = rewriter.clone(*op, mapping);
+    }
+
     for (OpOperand &operand : op->getOpOperands()) {
       // Special case for the induction variable uses. We replace it with a
       // version incremented based on the stage where it is used.
@@ -278,8 +312,9 @@ void LoopPipelinerInternal::createKernel(
         if (!dep)
           continue;
         auto stageDep = stages.find(dep);
-        if (stageDep == stages.end() || stageDep->second == useStage)
+        if (stageDep == stages.end() || stageDep->second == useStage) {
           continue;
+        }
         assert(stageDep->second == useStage + 1);
         newOp->setOperand(operand.getOperandNumber(),
                           mapping.lookupOrDefault(ret));
@@ -311,7 +346,8 @@ void LoopPipelinerInternal::createKernel(
   // returned values that will be needed by the epilogue.
   llvm::SmallVector<Value> yieldOperands;
   for (Value retVal : forOp.getBody()->getTerminator()->getOperands()) {
-    yieldOperands.push_back(mapping.lookupOrDefault(retVal));
+    Value yieldOperand = mapping.lookupOrDefault(retVal);
+    yieldOperands.push_back(yieldOperand);
   }
   for (auto &it : crossStageValues) {
     int64_t version = maxStage - it.second.lastUseStage + 1;
@@ -322,13 +358,16 @@ void LoopPipelinerInternal::createKernel(
     for (unsigned i = 1; i < numVersionReturned; i++) {
       setValueMapping(it.first, newForOp->getResult(yieldOperands.size()),
                       version++);
-      yieldOperands.push_back(
+      Value yieldOperand =
           newForOp.getBody()->getArguments()[yieldOperands.size() + 1 +
-                                             newForOp.getNumInductionVars()]);
+                                             newForOp.getNumInductionVars()];
+      yieldOperands.push_back(yieldOperand);
     }
     setValueMapping(it.first, newForOp->getResult(yieldOperands.size()),
                     version++);
-    yieldOperands.push_back(mapping.lookupOrDefault(it.first));
+
+    Value yieldOperand = mapping.lookupOrDefault(it.first);
+    yieldOperands.push_back(yieldOperand);
   }
   // Map the yield operand to the forOp returned value.
   for (const auto &retVal :
@@ -340,6 +379,7 @@ void LoopPipelinerInternal::createKernel(
                     newForOp->getResult(retVal.index()),
                     maxStage - defStage + 1);
   }
+  rewriter.setInsertionPointToEnd(&newForOp.getLoopBody().front());
   rewriter.create<scf::YieldOp>(forOp.getLoc(), yieldOperands);
 }
 
@@ -457,13 +497,20 @@ struct ForLoopPipelining : public OpRewritePattern<ForOp> {
 
     // 4. Emit the epilogue after the new forOp.
     rewriter.setInsertionPointAfter(newForOp);
-    llvm::SmallVector<Value> returnValues = pipeliner.emitEpilogue(rewriter);
+    llvm::SmallVector<Value> returnValues;
+
+    if (options.peelEpilogue)
+      returnValues = pipeliner.emitEpilogue(rewriter);
 
     // 5. Erase the original loop and replace the uses with the epilogue output.
-    if (forOp->getNumResults() > 0)
-      rewriter.replaceOp(forOp, returnValues);
-    else
+    if (forOp->getNumResults() > 0) {
+      if (options.peelEpilogue)
+        rewriter.replaceOp(forOp, returnValues);
+      else
+        rewriter.replaceOp(forOp, newForOp->getResults());
+    } else {
       rewriter.eraseOp(forOp);
+    }
 
     return success();
   }

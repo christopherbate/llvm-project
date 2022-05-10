@@ -14,6 +14,7 @@
 #define MLIR_DIALECT_SCF_TRANSFORMS_H_
 
 #include "mlir/Dialect/SCF/Utils/AffineCanonicalizationUtils.h"
+#include "mlir/IR/Dialect.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/ArrayRef.h"
 
@@ -141,6 +142,20 @@ struct PipeliningOption {
       std::function<void(Operation *, PipelinerPart, unsigned)>;
   AnnotationlFnType annotateFn = nullptr;
   // TODO: add option to decide if the prologue/epilogue should be peeled.
+
+  /// If `peelEpilogue` is false, an unrolled epilogue is not emitted. Instead,
+  /// sections of the kernel body are executed conditionally to accomplish the
+  /// same goal.
+  bool peelEpilogue{false};
+
+  /// Lambda called by the pipeliner to create dummy values need by the `then`
+  /// region of an `scf.if` operation. This is required when the epilogue is not
+  /// emitted and a conditional inside the kernel is used instead. The lambda
+  /// accepts a builder and a type and should provide a null value for the
+  /// specified type.
+  using DummyTypeCreaterFnType =
+      std::function<Value(OpBuilder &, Location, Type)>;
+  DummyTypeCreaterFnType dummyTypeCreatorFn = nullptr;
 };
 
 /// Populate patterns for SCF software pipelining transformation.
