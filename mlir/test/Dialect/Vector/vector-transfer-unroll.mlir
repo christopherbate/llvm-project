@@ -1,4 +1,5 @@
 // RUN: mlir-opt %s -test-vector-transfer-unrolling-patterns --split-input-file | FileCheck %s
+// RUN: mlir-opt %s -test-vector-transfer-unrolling-patterns=unroll-order=[2,0,1] --split-input-file | FileCheck %s --check-prefix=ORDER
 
 // CHECK-LABEL: func @transfer_read_unroll
 //       CHECK-DAG:   %[[C2:.*]] = arith.constant 2 : index

@@ -17,6 +17,7 @@
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/SCF.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/Vector/Transforms/VectorTransforms.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
@@ -457,6 +458,10 @@ struct TestVectorTransferUnrollingPatterns
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(
       TestVectorTransferUnrollingPatterns)
 
+  TestVectorTransferUnrollingPatterns() = default;
+  TestVectorTransferUnrollingPatterns(
+      const TestVectorTransferUnrollingPatterns &) {}
+
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<AffineDialect>();
   }
@@ -467,17 +472,29 @@ struct TestVectorTransferUnrollingPatterns
     return "Test lowering patterns to unroll transfer ops in the vector "
            "dialect";
   }
+  ListOption<int64_t> unrollOrder{*this, "unroll-order",
+                                  llvm::cl::desc("set the unroll order"),
+                                  llvm::cl::ZeroOrMore};
   void runOnOperation() override {
     MLIRContext *ctx = &getContext();
     RewritePatternSet patterns(ctx);
-    populateVectorUnrollPatterns(
-        patterns,
+    auto opts =
         UnrollVectorOptions()
             .setNativeShape(ArrayRef<int64_t>{2, 2})
             .setFilterConstraint([](Operation *op) {
               return success(
                   isa<vector::TransferReadOp, vector::TransferWriteOp>(op));
-            }));
+            });
+    if (!unrollOrder.empty()) {
+      opts.setUnrollTraversalOrderFn([this](Operation *op)
+                                         -> Optional<SmallVector<int64_t>> {
+        if (isa<vector::ContractionOp>(op)) {
+          return SmallVector<int64_t>{unrollOrder.begin(), unrollOrder.end()};
+        }
+        return llvm::None;
+      });
+    }
+    populateVectorUnrollPatterns(patterns, opts);
     populateVectorToVectorCanonicalizationPatterns(patterns);
     (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
   }
