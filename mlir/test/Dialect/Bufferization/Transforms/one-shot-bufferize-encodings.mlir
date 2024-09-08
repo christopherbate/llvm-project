@@ -1,27 +1,5 @@
 // RUN: mlir-opt %s -one-shot-bufferize="use-encoding-for-memory-space" -split-input-file | FileCheck %s
 
-// TODO: move to tensor dialect tests
-func.func @from_elements(%fill: f32, %f: f32, %idx: index) -> tensor<3xf32, 1> {
-  %t = tensor.from_elements %fill, %fill, %fill : tensor<3xf32, 1>
-  %i = tensor.insert %f into %t[%idx] : tensor<3xf32, 1>
-  return %i : tensor<3xf32, 1>
-}
-
-// CHECK-LABEL: @from_elements
-//  CHECK-SAME: (%[[arg0:.+]]: f32, %[[arg1:.+]]: f32, %[[arg2:.+]]: index) -> tensor<3xf32, 1 : i64>
-//       CHECK:     %[[alloc:.+]] = memref.alloc() {{.*}} : memref<3xf32, 1>
-//       CHECK-DAG:     %[[c0:.+]] = arith.constant 0 : index
-//       CHECK-DAG:     %[[c1:.+]] = arith.constant 1 : index
-//       CHECK-DAG:     %[[c2:.+]] = arith.constant 2 : index
-//       CHECK:     memref.store %[[arg0]], %[[alloc]][%[[c0]]] : memref<3xf32, 1>
-//       CHECK:     memref.store %[[arg0]], %[[alloc]][%[[c1]]] : memref<3xf32, 1>
-//       CHECK:     memref.store %[[arg0]], %[[alloc]][%[[c2]]] : memref<3xf32, 1>
-//       CHECK:     memref.store %[[arg1]], %[[alloc]][%[[arg2]]] : memref<3xf32, 1>
-//       CHECK:     %[[v0:.+]] = bufferization.to_tensor %[[alloc]] : memref<3xf32, 1> -> tensor<3xf32, 1 : i64>
-//       CHECK:     return %[[v0]] : tensor<3xf32, 1 : i64>
-
-// -----
-
 func.func @alloc_tesor_with_space_no_encoding() -> tensor<128xf32> {
   %0 = bufferization.alloc_tensor() {memory_space = 1 : i64} : tensor<128xf32>
   return %0 : tensor<128xf32>
@@ -131,22 +109,3 @@ func.func @materialize_in_destination(%arg0: tensor<128xf32, 1>) -> tensor<128xf
 //       CHECK:     memref.copy %[[v0]], %[[alloc]] : memref<128xf32, strided<[?], offset: ?>, 1> to memref<128xf32, 2>
 //       CHECK:     %[[v1:.+]] = bufferization.to_tensor %[[alloc]] : memref<128xf32, 2> -> tensor<128xf32, 2 : i64>
 //       CHECK:     return %[[v1]] : tensor<128xf32, 2 : i64>
-
-// -----
-
-func.func @scf_for_iter_arg(%arg0: tensor<128xf32, 1>, %arg1: index, %arg2: index, %arg3: index, %arg4: f32) -> tensor<128xf32, 1> {
-  %0 = scf.for %i = %arg1 to %arg2 step %arg3 iter_args(%iter = %arg0) -> tensor<128xf32, 1> {
-    %0 = tensor.insert %arg4 into %iter[%i] : tensor<128xf32, 1>
-    scf.yield %0 : tensor<128xf32, 1>
-  }
-  return %0 : tensor<128xf32, 1>
-}
-
-// -----
-
-func.func @scf_execute_region(%arg0: tensor<128xf32, 1>) -> tensor<128xf32, 1> {
-  %0 = scf.execute_region -> tensor<128xf32, 1> {
-    scf.yield %arg0 : tensor<128xf32, 1>
-  }
-  return %0 : tensor<128xf32, 1>
-}
