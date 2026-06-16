@@ -15,6 +15,7 @@
 
 #include "mlir/Support/LLVM.h"
 
+#include <map>
 #include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan.h>
@@ -34,6 +35,9 @@ struct VulkanDeviceMemoryBuffer {
   VkBuffer deviceBuffer{VK_NULL_HANDLE};
   VkDeviceMemory deviceMemory{VK_NULL_HANDLE};
   uint32_t bufferSize{0};
+  /// Device address of `deviceBuffer`, only valid when the shader uses the
+  /// PhysicalStorageBuffer addressing model (buffer device address).
+  VkDeviceAddress deviceAddress{0};
 };
 
 /// Struct containing information regarding to a host memory buffer.
@@ -107,6 +111,31 @@ public:
       const ResourceStorageClassBindingMap &stClassData);
   void setEntryPoint(const char *entryPointName);
 
+  //===--------------------------------------------------------------------===//
+  // Buffer device address (PhysicalStorageBuffer) handshake.
+  //
+  // Selected explicitly by the compiler-emitted launch (the runtime never
+  // inspects the SPIR-V module to decide the addressing model). The compiler
+  // hands each memref to the runtime using MLIR's standard ranked memref
+  // descriptor layout ({allocatedPtr, alignedPtr, offset, sizes[rank],
+  // strides[rank]}). The runtime then, for each resource:
+  //   1. creates a device-address-capable buffer,
+  //   2. builds a device-resident copy of the ranked descriptor with the two
+  //      pointer fields overwritten by the buffer's device address,
+  //   3. concatenates these device descriptors into an argument buffer and
+  //      uploads it, and
+  //   4. passes the argument buffer's device address to the shader as the sole
+  //      push constant (the "root pointer").
+  //===--------------------------------------------------------------------===//
+
+  /// Registers the host-side ranked memref descriptor for the resource at
+  /// `bindIndex` (descriptor set 0). `descriptorByteSize` is the size of the
+  /// ranked descriptor (24 + 16*rank bytes on a 64-bit host). Enables the
+  /// buffer-device-address launch path.
+  void setMemRefDescriptor(BindingIndex bindIndex,
+                           const void *hostRankedDescriptor,
+                           uint32_t descriptorByteSize);
+
   /// Runtime initialization.
   LogicalResult initRuntime();
 
@@ -159,6 +188,16 @@ private:
                                    VkBufferUsageFlagBits &bufferUsage);
 
   LogicalResult countDeviceMemorySize();
+
+  /// Builds the device-resident argument buffer: copies the host template,
+  /// patches in each resource's queried device address at its registered slot,
+  /// and uploads it to a device-address-capable buffer. Records its device
+  /// address in `argBufferDeviceAddress`.
+  LogicalResult createArgumentBuffer();
+
+  /// Records `vkCmdPushConstants` for the argument buffer's device address (the
+  /// root pointer) into `commandBuffer`.
+  void pushArgumentBufferRootPointer(VkCommandBuffer commandBuffer);
 
   //===--------------------------------------------------------------------===//
   // Vulkan objects.
@@ -221,6 +260,21 @@ private:
   const char *entryPoint{nullptr};
   uint8_t *binary{nullptr};
   uint32_t binarySize{0};
+
+  //===--------------------------------------------------------------------===//
+  // Buffer device address (PhysicalStorageBuffer) state.
+  //===--------------------------------------------------------------------===//
+
+  /// Whether to use the buffer-device-address launch path. Set explicitly via
+  /// setMemRefDescriptor (never inferred from the shader).
+  bool useBufferDeviceAddress{false};
+  /// Host-side ranked memref descriptor bytes for each resource, keyed by
+  /// binding (ordered, so the argument buffer is built in binding order).
+  std::map<BindingIndex, std::vector<uint8_t>> hostDescriptors;
+  /// Device-address-capable buffer holding the device-resident descriptors.
+  VkBuffer argBuffer{VK_NULL_HANDLE};
+  VkDeviceMemory argBufferMemory{VK_NULL_HANDLE};
+  VkDeviceAddress argBufferDeviceAddress{0};
 
   //===--------------------------------------------------------------------===//
   // Vulkan resource data and storage classes.

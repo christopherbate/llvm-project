@@ -19,6 +19,7 @@
 // Figure out a better way for error reporting.
 #include <iomanip>
 #include <iostream>
+#include <map>
 
 static inline void emitVulkanError(const char *api, VkResult error) {
   std::cerr << " failed with error code " << error << " when executing " << api;
@@ -60,6 +61,14 @@ void VulkanRuntime::setResourceData(const ResourceData &resData) {
 void VulkanRuntime::setShaderModule(uint8_t *shader, uint32_t size) {
   binary = shader;
   binarySize = size;
+}
+
+void VulkanRuntime::setMemRefDescriptor(BindingIndex bindIndex,
+                                        const void *hostRankedDescriptor,
+                                        uint32_t descriptorByteSize) {
+  const auto *bytes = static_cast<const uint8_t *>(hostRankedDescriptor);
+  hostDescriptors[bindIndex].assign(bytes, bytes + descriptorByteSize);
+  useBufferDeviceAddress = true;
 }
 
 LogicalResult VulkanRuntime::mapStorageClassToDescriptorType(
@@ -132,15 +141,24 @@ LogicalResult VulkanRuntime::destroy() {
                        commandBuffers.data());
   vkDestroyQueryPool(device, queryPool, nullptr);
   vkDestroyCommandPool(device, commandPool, nullptr);
-  vkFreeDescriptorSets(device, descriptorPool, descriptorSets.size(),
-                       descriptorSets.data());
-  vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+  // In the PhysicalStorageBuffer path no descriptor pool/sets are created.
+  if (descriptorPool != VK_NULL_HANDLE) {
+    vkFreeDescriptorSets(device, descriptorPool, descriptorSets.size(),
+                         descriptorSets.data());
+    vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+  }
   vkDestroyPipeline(device, pipeline, nullptr);
   vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
   for (auto &descriptorSetLayout : descriptorSetLayouts) {
     vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
   }
   vkDestroyShaderModule(device, shaderModule, nullptr);
+
+  // Free the argument buffer, if any (buffer-device-address path).
+  if (argBuffer != VK_NULL_HANDLE)
+    vkDestroyBuffer(device, argBuffer, nullptr);
+  if (argBufferMemory != VK_NULL_HANDLE)
+    vkFreeMemory(device, argBufferMemory, nullptr);
 
   // For each descriptor set.
   for (auto &deviceMemoryBufferMapPair : deviceMemoryBufferMap) {
@@ -166,18 +184,29 @@ LogicalResult VulkanRuntime::run() {
     return failure();
   }
 
-  // Descriptor bindings divided into sets. Each descriptor binding
-  // must have a layout binding attached into a descriptor set layout.
-  // Each layout set must be binded into a pipeline layout.
-  initDescriptorSetLayoutBindingMap();
-  if (failed(createDescriptorSetLayout()) || failed(createPipelineLayout()) ||
-      // Each descriptor set must be allocated from a descriptor pool.
-      failed(createComputePipeline()) || failed(createDescriptorPool()) ||
-      failed(allocateDescriptorSets()) || failed(setWriteDescriptors()) ||
-      // Create command buffer.
-      failed(createCommandPool()) || failed(createQueryPool()) ||
-      failed(createComputeCommandBuffer())) {
-    return failure();
+  if (useBufferDeviceAddress) {
+    // Buffers are accessed through their device addresses. The argument buffer
+    // holds the packed descriptors (with addresses patched in); its own device
+    // address is the sole push constant. No descriptor sets are needed.
+    if (failed(createArgumentBuffer()) || failed(createPipelineLayout()) ||
+        failed(createComputePipeline()) || failed(createCommandPool()) ||
+        failed(createQueryPool()) || failed(createComputeCommandBuffer())) {
+      return failure();
+    }
+  } else {
+    // Descriptor bindings divided into sets. Each descriptor binding
+    // must have a layout binding attached into a descriptor set layout.
+    // Each layout set must be binded into a pipeline layout.
+    initDescriptorSetLayoutBindingMap();
+    if (failed(createDescriptorSetLayout()) || failed(createPipelineLayout()) ||
+        // Each descriptor set must be allocated from a descriptor pool.
+        failed(createComputePipeline()) || failed(createDescriptorPool()) ||
+        failed(allocateDescriptorSets()) || failed(setWriteDescriptors()) ||
+        // Create command buffer.
+        failed(createCommandPool()) || failed(createQueryPool()) ||
+        failed(createComputeCommandBuffer())) {
+      return failure();
+    }
   }
 
   // Get working queue.
@@ -229,7 +258,11 @@ LogicalResult VulkanRuntime::createInstance() {
   applicationInfo.applicationVersion = 0;
   applicationInfo.pEngineName = "mlir";
   applicationInfo.engineVersion = 0;
-  applicationInfo.apiVersion = VK_MAKE_VERSION(1, 0, 0);
+  // The buffer device address API (vkGetBufferDeviceAddress) used for the
+  // PhysicalStorageBuffer addressing model is core in Vulkan 1.2.
+  applicationInfo.apiVersion = useBufferDeviceAddress
+                                   ? VK_API_VERSION_1_2
+                                   : VK_MAKE_VERSION(1, 0, 0);
 
   VkInstanceCreateInfo instanceCreateInfo = {};
   instanceCreateInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -287,10 +320,18 @@ LogicalResult VulkanRuntime::createDevice() {
   deviceQueueCreateInfo.queueCount = 1;
   deviceQueueCreateInfo.pQueuePriorities = &queuePriority;
 
+  // When the shader uses buffer device addresses, the feature must be enabled
+  // at device creation time.
+  VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures = {};
+  bufferDeviceAddressFeatures.sType =
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+  bufferDeviceAddressFeatures.bufferDeviceAddress = VK_TRUE;
+
   // Structure specifying parameters of a newly created device.
   VkDeviceCreateInfo deviceCreateInfo = {};
   deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-  deviceCreateInfo.pNext = nullptr;
+  deviceCreateInfo.pNext =
+      useBufferDeviceAddress ? &bufferDeviceAddressFeatures : nullptr;
   deviceCreateInfo.flags = 0;
   deviceCreateInfo.queueCreateInfoCount = 1;
   deviceCreateInfo.pQueueCreateInfos = &deviceQueueCreateInfo;
@@ -447,10 +488,18 @@ LogicalResult VulkanRuntime::createMemoryBuffers() {
                                               &memoryBuffer.hostMemory),
                              "vkAllocateMemory");
       memoryAllocateInfo.memoryTypeIndex = deviceMemoryTypeIndex;
+      // The device buffer's memory must be flagged as device-address capable so
+      // that vkGetBufferDeviceAddress can be queried for it.
+      VkMemoryAllocateFlagsInfo allocFlagsInfo = {};
+      allocFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+      allocFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+      if (useBufferDeviceAddress)
+        memoryAllocateInfo.pNext = &allocFlagsInfo;
       RETURN_ON_VULKAN_ERROR(vkAllocateMemory(device, &memoryAllocateInfo,
                                               nullptr,
                                               &memoryBuffer.deviceMemory),
                              "vkAllocateMemory");
+      memoryAllocateInfo.pNext = nullptr;
       void *payload;
       RETURN_ON_VULKAN_ERROR(vkMapMemory(device, memoryBuffer.hostMemory, 0,
                                          bufferSize, 0,
@@ -474,6 +523,10 @@ LogicalResult VulkanRuntime::createMemoryBuffers() {
       RETURN_ON_VULKAN_ERROR(vkCreateBuffer(device, &bufferCreateInfo, nullptr,
                                             &memoryBuffer.hostBuffer),
                              "vkCreateBuffer");
+      // The device buffer additionally needs the shader-device-address usage so
+      // its address can be queried and dereferenced by the shader.
+      if (useBufferDeviceAddress)
+        bufferCreateInfo.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
       RETURN_ON_VULKAN_ERROR(vkCreateBuffer(device, &bufferCreateInfo, nullptr,
                                             &memoryBuffer.deviceBuffer),
                              "vkCreateBuffer");
@@ -486,6 +539,16 @@ LogicalResult VulkanRuntime::createMemoryBuffers() {
                                                 memoryBuffer.deviceBuffer,
                                                 memoryBuffer.deviceMemory, 0),
                              "vkBindBufferMemory");
+
+      // Query the device address of the device buffer for shaders that access
+      // memory through the PhysicalStorageBuffer addressing model.
+      if (useBufferDeviceAddress) {
+        VkBufferDeviceAddressInfo addressInfo = {};
+        addressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        addressInfo.buffer = memoryBuffer.deviceBuffer;
+        memoryBuffer.deviceAddress =
+            vkGetBufferDeviceAddress(device, &addressInfo);
+      }
 
       // Update buffer info.
       memoryBuffer.bufferInfo.buffer = memoryBuffer.deviceBuffer;
@@ -649,8 +712,20 @@ LogicalResult VulkanRuntime::createPipelineLayout() {
   pipelineLayoutCreateInfo.flags = 0;
   pipelineLayoutCreateInfo.setLayoutCount = descriptorSetLayouts.size();
   pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts.data();
-  pipelineLayoutCreateInfo.pushConstantRangeCount = 0;
-  pipelineLayoutCreateInfo.pPushConstantRanges = nullptr;
+
+  // In the PhysicalStorageBuffer addressing model, the shader receives a single
+  // push constant: the device address of the argument buffer ("root pointer").
+  VkPushConstantRange pushConstantRange = {};
+  if (useBufferDeviceAddress) {
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(VkDeviceAddress);
+    pipelineLayoutCreateInfo.pushConstantRangeCount = 1;
+    pipelineLayoutCreateInfo.pPushConstantRanges = &pushConstantRange;
+  } else {
+    pipelineLayoutCreateInfo.pushConstantRangeCount = 0;
+    pipelineLayoutCreateInfo.pPushConstantRanges = nullptr;
+  }
   RETURN_ON_VULKAN_ERROR(vkCreatePipelineLayout(device,
                                                 &pipelineLayoutCreateInfo,
                                                 nullptr, &pipelineLayout),
@@ -829,9 +904,13 @@ LogicalResult VulkanRuntime::createComputeCommandBuffer() {
     vkCmdResetQueryPool(commandBuffer, queryPool, 0, 2);
 
   vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-  vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                          pipelineLayout, 0, descriptorSets.size(),
-                          descriptorSets.data(), 0, nullptr);
+  if (useBufferDeviceAddress) {
+    pushArgumentBufferRootPointer(commandBuffer);
+  } else {
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            pipelineLayout, 0, descriptorSets.size(),
+                            descriptorSets.data(), 0, nullptr);
+  }
   // Get a timestamp before invoking the compute shader.
   if (queryPool != VK_NULL_HANDLE)
     vkCmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -849,6 +928,96 @@ LogicalResult VulkanRuntime::createComputeCommandBuffer() {
 
   commandBuffers.push_back(commandBuffer);
   return success();
+}
+
+LogicalResult VulkanRuntime::createArgumentBuffer() {
+  // Map each binding to its queried device address.
+  std::map<BindingIndex, VkDeviceAddress> bindingAddress;
+  for (const auto &deviceMemoryBufferMapPair : deviceMemoryBufferMap)
+    for (const auto &memBuffer : deviceMemoryBufferMapPair.second)
+      bindingAddress[memBuffer.bindingIndex] = memBuffer.deviceAddress;
+
+  // Build the argument buffer by concatenating, in binding order, a
+  // device-resident copy of each ranked memref descriptor. The descriptor's two
+  // leading pointer fields (allocatedPtr, alignedPtr) are overwritten with the
+  // buffer's device address; offset/sizes/strides are kept verbatim, so the
+  // shader sees a standard MLIR ranked descriptor addressed by device pointer.
+  std::vector<uint8_t> patched;
+  for (const auto &descriptorPair : hostDescriptors) {
+    BindingIndex bindIndex = descriptorPair.first;
+    const std::vector<uint8_t> &descriptor = descriptorPair.second;
+
+    auto addressIt = bindingAddress.find(bindIndex);
+    if (addressIt == bindingAddress.end()) {
+      std::cerr << "missing device address for binding " << bindIndex;
+      return failure();
+    }
+    if (descriptor.size() < 2 * sizeof(VkDeviceAddress)) {
+      std::cerr << "ranked descriptor too small for binding " << bindIndex;
+      return failure();
+    }
+
+    size_t base = patched.size();
+    patched.insert(patched.end(), descriptor.begin(), descriptor.end());
+    // Overwrite allocatedPtr (offset 0) and alignedPtr (offset 8).
+    VkDeviceAddress address = addressIt->second;
+    std::memcpy(patched.data() + base, &address, sizeof(VkDeviceAddress));
+    std::memcpy(patched.data() + base + sizeof(VkDeviceAddress), &address,
+                sizeof(VkDeviceAddress));
+  }
+
+  VkDeviceSize size = patched.size();
+
+  // Allocate host-visible, device-address-capable memory for the argument
+  // buffer and write the patched contents directly (it is read-only metadata,
+  // so no separate device-local staging is needed).
+  VkMemoryAllocateFlagsInfo allocFlagsInfo = {};
+  allocFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+  allocFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+
+  VkMemoryAllocateInfo memoryAllocateInfo = {};
+  memoryAllocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  memoryAllocateInfo.pNext = &allocFlagsInfo;
+  memoryAllocateInfo.allocationSize = size;
+  memoryAllocateInfo.memoryTypeIndex = hostMemoryTypeIndex;
+  RETURN_ON_VULKAN_ERROR(
+      vkAllocateMemory(device, &memoryAllocateInfo, nullptr, &argBufferMemory),
+      "vkAllocateMemory");
+
+  void *payload;
+  RETURN_ON_VULKAN_ERROR(vkMapMemory(device, argBufferMemory, 0, size, 0,
+                                     reinterpret_cast<void **>(&payload)),
+                         "vkMapMemory");
+  std::memcpy(payload, patched.data(), size);
+  vkUnmapMemory(device, argBufferMemory);
+
+  VkBufferCreateInfo bufferCreateInfo = {};
+  bufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  bufferCreateInfo.size = size;
+  bufferCreateInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+  bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  bufferCreateInfo.queueFamilyIndexCount = 1;
+  bufferCreateInfo.pQueueFamilyIndices = &queueFamilyIndex;
+  RETURN_ON_VULKAN_ERROR(
+      vkCreateBuffer(device, &bufferCreateInfo, nullptr, &argBuffer),
+      "vkCreateBuffer");
+  RETURN_ON_VULKAN_ERROR(
+      vkBindBufferMemory(device, argBuffer, argBufferMemory, 0),
+      "vkBindBufferMemory");
+
+  VkBufferDeviceAddressInfo addressInfo = {};
+  addressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+  addressInfo.buffer = argBuffer;
+  argBufferDeviceAddress = vkGetBufferDeviceAddress(device, &addressInfo);
+  return success();
+}
+
+void VulkanRuntime::pushArgumentBufferRootPointer(
+    VkCommandBuffer commandBuffer) {
+  vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                     /*offset=*/0, sizeof(VkDeviceAddress),
+                     &argBufferDeviceAddress);
 }
 
 LogicalResult VulkanRuntime::submitCommandBuffersToQueue() {
