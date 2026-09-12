@@ -294,8 +294,6 @@ function(add_mlir_example_library name)
   list(APPEND ARG_LINK_COMPONENTS Support)
   _check_llvm_components_usage(${name} ${ARG_LINK_LIBS})
 
-  list(APPEND ARG_DEPENDS mlir-generic-headers)
-
   llvm_add_library(${name} ${LIBTYPE} ${ARG_UNPARSED_ARGUMENTS} ${srcs} DEPENDS ${ARG_DEPENDS} LINK_COMPONENTS ${ARG_LINK_COMPONENTS} LINK_LIBS ${ARG_LINK_LIBS})
   set_target_properties(${name} PROPERTIES FOLDER "MLIR/Examples")
   if (LLVM_BUILD_EXAMPLES AND NOT ${ARG_DISABLE_INSTALL})
@@ -386,7 +384,6 @@ function(add_mlir_library name)
   endif()
   _check_llvm_components_usage(${name} ${ARG_LINK_LIBS})
 
-  list(APPEND ARG_DEPENDS mlir-generic-headers)
   llvm_add_library(${name} ${LIBTYPE} ${ARG_UNPARSED_ARGUMENTS} ${srcs} DEPENDS ${ARG_DEPENDS} LINK_COMPONENTS ${ARG_LINK_COMPONENTS} LINK_LIBS ${ARG_LINK_LIBS})
 
   if(TARGET ${name})
@@ -677,25 +674,25 @@ endfunction()
 # Declare the library associated with a dialect.
 function(add_mlir_dialect_library name)
   set_property(GLOBAL APPEND PROPERTY MLIR_DIALECT_LIBS ${name})
-  add_mlir_library(${ARGV} DEPENDS mlir-headers)
+  add_mlir_library(${ARGV})
 endfunction(add_mlir_dialect_library)
 
 # Declare the library associated with a conversion.
 function(add_mlir_conversion_library name)
   set_property(GLOBAL APPEND PROPERTY MLIR_CONVERSION_LIBS ${name})
-  add_mlir_library(${ARGV} DEPENDS mlir-headers)
+  add_mlir_library(${ARGV})
 endfunction(add_mlir_conversion_library)
 
 # Declare the library associated with an extension.
 function(add_mlir_extension_library name)
   set_property(GLOBAL APPEND PROPERTY MLIR_EXTENSION_LIBS ${name})
-  add_mlir_library(${ARGV} DEPENDS mlir-headers)
+  add_mlir_library(${ARGV})
 endfunction(add_mlir_extension_library)
 
 # Declare the library associated with a translation.
 function(add_mlir_translation_library name)
   set_property(GLOBAL APPEND PROPERTY MLIR_TRANSLATION_LIBS ${name})
-  add_mlir_library(${ARGV} DEPENDS mlir-headers)
+  add_mlir_library(${ARGV})
 endfunction(add_mlir_translation_library)
 
 # Verification tools to aid debugging.

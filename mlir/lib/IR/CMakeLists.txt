@@ -67,6 +67,7 @@ add_mlir_library(MLIRIR
   MLIRCastInterfacesIncGen
   MLIRDataLayoutInterfacesIncGen
   MLIRDialectFoldInterfaceIncGen
+  MLIRInferIntRangeInterfaceIncGen
   MLIROpAsmInterfaceIncGen
   MLIRQuantStorageTypeInterfaceIncGen
   MLIRRegionKindInterfaceIncGen

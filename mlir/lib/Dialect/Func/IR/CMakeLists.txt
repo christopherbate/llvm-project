@@ -7,7 +7,14 @@ add_mlir_dialect_library(MLIRFuncDialect
   DEPENDS
   MLIRFuncOpsIncGen
 
-  LINK_LIBS PUBLIC
+  # FuncOps.cpp includes generated Bufferization interfaces.
+  LINK_LIBS
+  PRIVATE
+  MLIRBufferizableOpInterfaceIncGen
+  MLIRConvertToEmitCPatternInterfaceIncGen
+  MLIRConvertToLLVMInterfaceIncGen
+  MLIRTransformsDialectInterfaceIncGen
+  PUBLIC
   MLIRCallInterfaces
   MLIRControlFlowInterfaces
   MLIRFunctionInterfaces

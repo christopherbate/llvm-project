@@ -17,7 +17,11 @@ add_mlir_dialect_library(MLIRGPUDialect
   # GPU dialect sources include llvm/IR/Attributes.h.
   intrinsics_gen
 
-  LINK_LIBS PUBLIC
+  LINK_LIBS
+  PRIVATE
+  MLIRBufferDeallocationOpInterfaceIncGen
+  PUBLIC
+  MLIRDeviceMappingInterfacesIncGen
   MLIRArithDialect
   MLIRDLTIDialect
   MLIRControlFlowInterfaces
@@ -58,7 +62,6 @@ add_mlir_dialect_library(MLIRGPUTransforms
 
   DEPENDS
   MLIRGPUPassIncGen
-  MLIRParallelLoopMapperEnumsGen
 
   LINK_LIBS PUBLIC
   MLIRAMDGPUDialect

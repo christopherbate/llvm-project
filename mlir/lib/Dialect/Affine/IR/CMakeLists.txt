@@ -15,6 +15,7 @@ add_mlir_dialect_library(MLIRAffineDialect
   MLIRAffineOpsIncGen
 
   LINK_LIBS PUBLIC
+  MLIRAlignmentAttrInterfaceIncGen
   MLIRArithDialect
   MLIRDialectUtils
   MLIRIR

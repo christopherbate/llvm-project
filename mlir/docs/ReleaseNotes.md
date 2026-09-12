@@ -8,6 +8,19 @@ specifically, it is a snapshot of the MLIR development at the time of the releas
 
 [TOC]
 
+## LLVM 24
+
+### Potentially Breaking Changes
+
+- MLIR libraries no longer implicitly depend on the aggregate `mlir-headers`
+  or `mlir-generic-headers` targets. Downstream projects that relied on that
+  incidental ordering must model generated headers explicitly: link the
+  library that owns the header, link the exact build-local `*IncGen` interface
+  target when no library link is required, or retain an explicit aggregate
+  dependency as a temporary compatibility escape hatch.
+
+- The minimum supported CMake version is now 3.31.
+
 ## LLVM 21
 
 ### GPU/NVVM Changes

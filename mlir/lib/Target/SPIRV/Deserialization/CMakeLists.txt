@@ -3,9 +3,6 @@ add_mlir_translation_library(MLIRSPIRVDeserialization
   Deserializer.cpp
   Deserialization.cpp
 
-  DEPENDS
-  MLIRSPIRVSerializationGen
-
   LINK_LIBS PUBLIC
   MLIRIR
   MLIRSPIRVDialect
@@ -13,5 +10,4 @@ add_mlir_translation_library(MLIRSPIRVDeserialization
   MLIRSupport
   MLIRTranslateLib
   )
-
 

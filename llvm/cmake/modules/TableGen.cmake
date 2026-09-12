@@ -169,8 +169,44 @@ function(add_public_tablegen_target target)
   if(NOT TABLEGEN_OUTPUT)
     message(FATAL_ERROR "Requires tablegen() definitions as TABLEGEN_OUTPUT.")
   endif()
-  add_custom_target(${target}
-    DEPENDS ${TABLEGEN_OUTPUT})
+  # Private sources make the interface library a build target owning every
+  # generated output. Publish only non-compilable outputs as headers so source
+  # shards remain compilable when another target lists them as sources.
+  add_library(${target} INTERFACE)
+  target_sources(${target} PRIVATE ${TABLEGEN_OUTPUT})
+  get_property(enabled_languages GLOBAL PROPERTY ENABLED_LANGUAGES)
+  set(tablegen_headers)
+  foreach(output IN LISTS TABLEGEN_OUTPUT)
+    get_filename_component(extension "${output}" LAST_EXT)
+    string(REGEX REPLACE "^\\." "" extension "${extension}")
+    set(is_compilable FALSE)
+    foreach(language IN LISTS enabled_languages)
+      set(source_extensions ${CMAKE_${language}_SOURCE_FILE_EXTENSIONS})
+      if(extension IN_LIST source_extensions)
+        set(is_compilable TRUE)
+        break()
+      endif()
+    endforeach()
+    if(NOT is_compilable)
+      list(APPEND tablegen_headers "${output}")
+    endif()
+  endforeach()
+  if(tablegen_headers)
+    target_sources(${target} INTERFACE
+      FILE_SET llvm_generated_headers TYPE HEADERS
+      BASE_DIRS "${CMAKE_BINARY_DIR}"
+      FILES ${tablegen_headers})
+    set_property(TARGET ${target} APPEND PROPERTY
+      TRANSITIVE_COMPILE_PROPERTIES LLVM_GENERATED_HEADER_TARGETS)
+    set_property(TARGET ${target} APPEND PROPERTY
+      LLVM_GENERATED_HEADERS ${tablegen_headers})
+    set_property(TARGET ${target} APPEND PROPERTY
+      LLVM_GENERATED_HEADER_TARGETS ${target})
+    set_property(TARGET ${target} APPEND PROPERTY
+      INTERFACE_LLVM_GENERATED_HEADER_TARGETS
+      "$<BUILD_LOCAL_INTERFACE:${target}>")
+  endif()
+  set_property(TARGET ${target} PROPERTY LLVM_GENERATED_HEADER_TARGET TRUE)
   if(LLVM_COMMON_DEPENDS)
     add_dependencies(${target} ${LLVM_COMMON_DEPENDS})
   endif()

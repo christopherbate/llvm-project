@@ -10,7 +10,10 @@ add_mlir_conversion_library(MLIRUBToLLVM
   LINK_COMPONENTS
   Core
 
-  LINK_LIBS PUBLIC
+  LINK_LIBS
+  PRIVATE
+  MLIRConvertToLLVMInterfaceIncGen
+  PUBLIC
   MLIRLLVMCommonConversion
   MLIRLLVMDialect
   MLIRUBDialect

@@ -15,8 +15,10 @@ function(add_mlir_interface_library name)
 
     LINK_LIBS PUBLIC
     MLIRIR
+    ${ARGN}
     )
 endfunction(add_mlir_interface_library)
 
-add_mlir_interface_library(MaskableOpInterface)
+add_mlir_interface_library(MaskableOpInterface
+  MLIRMaskingOpInterfaceIncGen)
 add_mlir_interface_library(MaskingOpInterface)

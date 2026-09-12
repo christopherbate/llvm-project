@@ -12,7 +12,14 @@ add_mlir_dialect_library(MLIRMemRefDialect
   MLIRMemRefOpsIncGen
   MLIRMemoryAccessOpInterfacesIncGen
 
-  LINK_LIBS PUBLIC
+  LINK_LIBS
+  PRIVATE
+  MLIRAllocationOpInterfaceIncGen
+  MLIRConvertToEmitCPatternInterfaceIncGen
+  MLIRConvertToLLVMInterfaceIncGen
+  MLIRRuntimeVerifiableOpInterfaceIncGen
+  PUBLIC
+  MLIRAlignmentAttrInterfaceIncGen
   MLIRArithDialect
   MLIRArithUtils
   MLIRControlFlowInterfaces

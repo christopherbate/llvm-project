@@ -10,6 +10,7 @@ add_mlir_library(MLIRABI
   Support
 
   LINK_LIBS PUBLIC
+  MLIRFunctionInterfacesIncGen
   MLIRIR
   MLIRDataLayoutInterfaces
   )

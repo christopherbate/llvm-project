@@ -1,0 +1,202 @@
+# RUN: rm -rf %t
+# RUN: split-file %s %t
+# RUN: "%cmake_exe" -S %t -B %t/build -G "%cmake_generator" \
+# RUN:   -DLLVM_SOURCE_DIR="%llvm_src_root" 2>&1 | FileCheck %s
+# RUN: "%cmake_exe" --build %t/build --target ProviderIncGen --parallel 4
+# RUN: "%cmake_exe" --build %t/build --target MixedIncGen --parallel 4
+# RUN: "%cmake_exe" --build %t/build --target clean
+# RUN: "%cmake_exe" --build %t/build --target obj.Consumer --parallel 4
+# RUN: "%cmake_exe" --build %t/build --target obj.Consumer --parallel 4 2>&1 \
+# RUN:   | FileCheck %s --check-prefix=NO-WORK
+# RUN: test ! -e %t/build/libProvider.a
+# RUN: "%cmake_exe" --build %t/build --target clean
+# RUN: "%cmake_exe" --build %t/build --target obj.OtherCycleConsumer --parallel 4
+# RUN: "%cmake_exe" --build %t/build --target clean
+# RUN: "%cmake_exe" --build %t/build --target obj.Downstream --parallel 4
+# RUN: test ! -e %t/build/Provider.h
+# RUN: "%cmake_exe" --build %t/build --target clean
+# RUN: "%cmake_exe" --build %t/build --target NativeConsumer --parallel 4
+# RUN: "%cmake_exe" --build %t/build --target clean
+# RUN: "%cmake_exe" --build %t/build --target obj.ComponentConsumer --parallel 4
+# RUN: "%cmake_exe" --build %t/build --target clean
+# RUN: "%cmake_exe" --build %t/build --target obj.StaticConsumer --parallel 4
+# RUN: test ! -e %t/build/libDualProvider_static.a
+# RUN: "%cmake_exe" --build %t/build --target clean
+# RUN: "%cmake_exe" --build %t/build --target obj.LLVMForwardConsumer --parallel 4
+# RUN: "%cmake_exe" -S %t/export-consumer -B %t/export-consumer-build \
+# RUN:   -DPROVIDER_EXPORT=%t/build/provider.cmake
+
+# CHECK: -- TableGen header file set checks passed
+# NO-WORK: ninja: no work to do.
+
+#--- CMakeLists.txt
+cmake_minimum_required(VERSION 3.31)
+project(TableGenHeaderFileSets LANGUAGES C CXX)
+set(CMAKE_INSTALL_LIBDIR lib)
+list(APPEND CMAKE_MODULE_PATH "${LLVM_SOURCE_DIR}/cmake/modules")
+include(AddLLVM)
+include(TableGen)
+include(LLVM-Build)
+
+function(add_provider provider)
+  set(LLVM_COMMON_DEPENDS)
+  set(header "${CMAKE_CURRENT_BINARY_DIR}/${provider}.h")
+  if(provider STREQUAL "Disabled")
+    set(command ${CMAKE_COMMAND} -E false)
+  else()
+    set(command ${CMAKE_COMMAND} -E touch "${header}")
+  endif()
+  add_custom_command(OUTPUT "${header}" COMMAND ${command})
+  set(TABLEGEN_OUTPUT "${header}")
+  add_public_tablegen_target(${provider}IncGen)
+  llvm_add_library(${provider} empty.cpp OBJECT PARTIAL_SOURCES_INTENDED
+    DEPENDS ${provider}IncGen ${ARGN})
+endfunction()
+
+add_provider(Base)
+# A direct generated-header link is automatically hidden from exports.
+add_provider(Provider LINK_LIBS PUBLIC Base ProviderIncGen)
+# Exercise callers that extend an llvm_add_library target with the plain
+# target_link_libraries signature.
+add_provider(Legacy)
+target_link_libraries(Legacy Base)
+add_custom_target(SourceGenerator COMMAND ${CMAKE_COMMAND} -E false)
+add_dependencies(Provider SourceGenerator)
+add_library(ProviderAlias ALIAS Provider)
+add_provider(3rdParty)
+add_provider(Disabled)
+add_provider(Native)
+add_provider(LLVMProvider)
+add_provider(CycleA LINK_LIBS PUBLIC CycleB)
+add_provider(CycleB LINK_LIBS PUBLIC CycleA)
+
+# Generated source shards are owned by the TableGen target, but only generated
+# headers belong to its public HEADERS file set.
+function(add_mixed_provider)
+  set(LLVM_COMMON_DEPENDS)
+  set(mixed_header "${CMAKE_CURRENT_BINARY_DIR}/Mixed.h")
+  set(mixed_source "${CMAKE_CURRENT_BINARY_DIR}/Mixed.cpp")
+  add_custom_command(OUTPUT "${mixed_header}" "${mixed_source}"
+    COMMAND ${CMAKE_COMMAND} -E touch "${mixed_header}" "${mixed_source}")
+  set(TABLEGEN_OUTPUT "${mixed_header}" "${mixed_source}")
+  add_public_tablegen_target(MixedIncGen)
+  set(mixed_header "${mixed_header}" PARENT_SCOPE)
+endfunction()
+add_mixed_provider()
+
+llvm_add_library(Consumer consumer.cpp OBJECT PARTIAL_SOURCES_INTENDED
+  LINK_LIBS PRIVATE
+    ProviderAlias
+    "$<$<BOOL:1>:3rdParty>"
+    "$<$<BOOL:0>:Disabled>"
+    Legacy
+    CycleA)
+target_include_directories(obj.Consumer PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+
+llvm_add_library(OtherCycleConsumer cycle.cpp OBJECT PARTIAL_SOURCES_INTENDED
+  LINK_LIBS PRIVATE CycleB)
+target_include_directories(obj.OtherCycleConsumer PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}")
+
+# Private link dependencies are compile requirements of Consumer, but must not
+# become compile requirements of Consumer's dependents.
+llvm_add_library(Downstream empty.cpp OBJECT PARTIAL_SOURCES_INTENDED
+  LINK_LIBS PRIVATE Consumer)
+
+# A target using ordinary CMake APIs receives the generated header through the
+# provider's linked HEADERS file set without AddLLVM's object-library bridge.
+add_library(NativeConsumer OBJECT native.cpp)
+target_include_directories(NativeConsumer PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(NativeConsumer PRIVATE Native)
+
+# LINK_COMPONENTS is resolved to the same logical provider graph.
+set(LLVM_AVAILABLE_LIBS LLVMProvider)
+llvm_add_library(ComponentConsumer component.cpp OBJECT PARTIAL_SOURCES_INTENDED
+  LINK_COMPONENTS Provider)
+target_include_directories(obj.ComponentConsumer PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}")
+
+# Combined shared/static libraries publish their generators through each
+# logical variant without requiring an archive to compile a consumer.
+llvm_add_library(DualProvider empty.cpp SHARED STATIC PARTIAL_SOURCES_INTENDED
+  DEPENDS ProviderIncGen)
+llvm_add_library(StaticConsumer static.cpp OBJECT PARTIAL_SOURCES_INTENDED
+  LINK_LIBS PRIVATE DualProvider_static)
+target_include_directories(obj.StaticConsumer PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}")
+
+# Component names may refer to a provider registered later.
+llvm_add_library(LLVMForwardConsumer forward.cpp OBJECT COMPONENT_LIB
+  PARTIAL_SOURCES_INTENDED LINK_COMPONENTS forwardprovider)
+target_include_directories(obj.LLVMForwardConsumer PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}")
+llvm_add_library(LLVMForwardProvider empty.cpp OBJECT PARTIAL_SOURCES_INTENDED
+  DEPENDS BaseIncGen)
+list(APPEND LLVM_AVAILABLE_LIBS LLVMForwardProvider)
+add_library(Engine INTERFACE)
+LLVMBuildResolveComponentsLink()
+
+# Build-local carriers must disappear from installed/exported interfaces.
+export(TARGETS Provider Base FILE provider.cmake)
+install(TARGETS Provider Base EXPORT provider ARCHIVE DESTINATION lib)
+install(EXPORT provider DESTINATION lib/cmake)
+
+get_target_property(provider_type ProviderIncGen TYPE)
+if(NOT provider_type STREQUAL "INTERFACE_LIBRARY")
+  message(FATAL_ERROR "Unexpected TableGen target type: '${provider_type}'")
+endif()
+get_target_property(provider_headers ProviderIncGen
+  HEADER_SET_llvm_generated_headers)
+if(NOT "${provider_headers}" STREQUAL
+    "${CMAKE_CURRENT_BINARY_DIR}/Provider.h")
+  message(FATAL_ERROR "Unexpected generated header file set: '${provider_headers}'")
+endif()
+get_target_property(mixed_headers MixedIncGen
+  HEADER_SET_llvm_generated_headers)
+if(NOT "${mixed_headers}" STREQUAL "${mixed_header}")
+  message(FATAL_ERROR "Generated source leaked into file set: '${mixed_headers}'")
+endif()
+message(STATUS "TableGen header file set checks passed")
+
+#--- empty.cpp
+int empty;
+
+#--- consumer.cpp
+#include "Base.h"
+#include "Provider.h"
+#include "3rdParty.h"
+#include "Legacy.h"
+#include "CycleA.h"
+#include "CycleB.h"
+
+#--- cycle.cpp
+#include "CycleA.h"
+#include "CycleB.h"
+
+#--- native.cpp
+#include "Native.h"
+
+#--- component.cpp
+#include "LLVMProvider.h"
+
+#--- static.cpp
+#include "Provider.h"
+
+#--- forward.cpp
+#include "Base.h"
+
+#--- export-consumer/CMakeLists.txt
+cmake_minimum_required(VERSION 3.31)
+project(ExportConsumer LANGUAGES CXX)
+include("${PROVIDER_EXPORT}")
+get_target_property(header_targets Provider
+  INTERFACE_LLVM_GENERATED_HEADER_TARGETS)
+if(header_targets MATCHES "ProviderIncGen")
+  message(FATAL_ERROR
+    "Build-tree header carrier leaked into export: '${header_targets}'")
+endif()
+get_target_property(link_targets Provider INTERFACE_LINK_LIBRARIES)
+if(link_targets MATCHES "ProviderIncGen")
+  message(FATAL_ERROR
+    "Build-tree generated-header link leaked into export: '${link_targets}'")
+endif()

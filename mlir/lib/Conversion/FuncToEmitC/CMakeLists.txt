@@ -8,7 +8,10 @@ add_mlir_conversion_library(MLIRFuncToEmitC
   DEPENDS
   MLIRConversionPassIncGen
 
-  LINK_LIBS PUBLIC
+  LINK_LIBS
+  PRIVATE
+  MLIRConvertToEmitCPatternInterfaceIncGen
+  PUBLIC
   MLIREmitCCommonConversion
   MLIREmitCDialect
   MLIRFuncDialect

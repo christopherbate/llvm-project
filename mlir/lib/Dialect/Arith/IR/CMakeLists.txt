@@ -22,8 +22,20 @@ add_mlir_dialect_library(MLIRArithDialect
   DEPENDS
   MLIRArithOpsIncGen
   MLIRArithOpsInterfacesIncGen
+  # TODO: Give this generated interface a standalone logical library target.
+  MLIRConvertToEmitCPatternInterfaceIncGen
+  MLIRConvertToLLVMInterfaceIncGen
+  MLIRTransformsDialectInterfaceIncGen
 
-  LINK_LIBS PUBLIC
+  # The sources include generated interface definitions.
+  LINK_LIBS
+  PRIVATE
+  MLIRBufferDeallocationOpInterfaceIncGen
+  MLIRBufferizableOpInterfaceIncGen
+  MLIRDestinationStyleOpInterfaceIncGen
+  MLIRValueBoundsOpInterfaceIncGen
+  PUBLIC
+  MLIRControlFlowInterfacesIncGen
   MLIRCastInterfaces
   MLIRDialect
   MLIRInferIntDivisibilityOpInterface
@@ -32,6 +44,7 @@ add_mlir_dialect_library(MLIRArithDialect
   MLIRInferTypeOpInterface
   MLIRIR
   MLIRUBDialect
+  MLIRVectorInterfaces
   )
 
 add_mlir_dialect_library(MLIRArithValueBoundsOpInterfaceImpl

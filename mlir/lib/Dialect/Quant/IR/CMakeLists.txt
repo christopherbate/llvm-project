@@ -13,7 +13,10 @@ add_mlir_dialect_library(MLIRQuantDialect
   MLIRQuantOpsIncGen
   MLIRQuantDialectBytecodeIncGen
 
-  LINK_LIBS PUBLIC
+  LINK_LIBS
+  PRIVATE
+  MLIRTransformsDialectInterfaceIncGen
+  PUBLIC
   MLIRIR
   MLIRInferTypeOpInterface
   MLIRSideEffectInterfaces
