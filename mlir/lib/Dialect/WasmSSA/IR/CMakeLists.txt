@@ -12,6 +12,7 @@ add_mlir_dialect_library(MLIRWasmSSADialect
   MLIRWasmSSAInterfacesIncGen
 
   LINK_LIBS PUBLIC
+  MLIRFunctionInterfacesIncGen
   MLIRCastInterfaces
   MLIRDataLayoutInterfaces
   MLIRDialect

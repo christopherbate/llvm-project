@@ -7,7 +7,11 @@ add_mlir_dialect_library(MLIRControlFlowDialect
   DEPENDS
   MLIRControlFlowOpsIncGen
 
-  LINK_LIBS PUBLIC
+  LINK_LIBS
+  PRIVATE
+  MLIRBufferDeallocationOpInterfaceIncGen
+  MLIRBufferizableOpInterfaceIncGen
+  PUBLIC
   MLIRArithDialect
   MLIRControlFlowInterfaces
   MLIRIR

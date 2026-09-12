@@ -14,9 +14,12 @@ add_mlir_dialect_library(MLIRTosaDialect
   MLIRTosaOpsIncGen
   MLIRTosaInterfacesIncGen
   MLIRTosaEnumsIncGen
-  MLIRShardingInterfaceIncGen
 
-  LINK_LIBS PUBLIC
+  # TosaOps.cpp includes ShardingInterface.h for promised interfaces.
+  LINK_LIBS
+  PRIVATE
+  MLIRShardingInterfaceIncGen
+  PUBLIC
   MLIRIR
   MLIRDialect
   MLIRCallInterfaces

@@ -11,7 +11,12 @@ add_mlir_dialect_library(MLIRSCFDialect
   MLIRSCFOpsIncGen
   MLIRDeviceMappingInterfacesIncGen
 
-  LINK_LIBS PUBLIC
+  LINK_LIBS
+  PRIVATE
+  MLIRAlignmentAttrInterfaceIncGen
+  MLIRBufferDeallocationOpInterfaceIncGen
+  MLIRBufferizableOpInterfaceIncGen
+  PUBLIC
   MLIRArithDialect
   MLIRControlFlowDialect
   MLIRDialectUtils

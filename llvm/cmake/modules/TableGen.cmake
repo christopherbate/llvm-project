@@ -169,8 +169,31 @@ function(add_public_tablegen_target target)
   if(NOT TABLEGEN_OUTPUT)
     message(FATAL_ERROR "Requires tablegen() definitions as TABLEGEN_OUTPUT.")
   endif()
-  add_custom_target(${target}
-    DEPENDS ${TABLEGEN_OUTPUT})
+  # Private sources make the interface library a build target owning every
+  # generated output. Publish only non-compilable outputs as headers so source
+  # shards remain compilable when another target lists them as sources.
+  add_library(${target} INTERFACE)
+  target_sources(${target} PRIVATE ${TABLEGEN_OUTPUT})
+  get_property(enabled_languages GLOBAL PROPERTY ENABLED_LANGUAGES)
+  set(tablegen_headers ${TABLEGEN_OUTPUT})
+  foreach(output IN LISTS TABLEGEN_OUTPUT)
+    get_filename_component(extension "${output}" LAST_EXT)
+    string(REGEX REPLACE "^\\." "" extension "${extension}")
+    foreach(language IN LISTS enabled_languages)
+      if(extension IN_LIST CMAKE_${language}_SOURCE_FILE_EXTENSIONS)
+        list(REMOVE_ITEM tablegen_headers "${output}")
+      endif()
+    endforeach()
+  endforeach()
+  if(tablegen_headers)
+    target_sources(${target} INTERFACE
+      FILE_SET llvm_generated_headers TYPE HEADERS
+      BASE_DIRS "${CMAKE_BINARY_DIR}"
+      FILES ${tablegen_headers})
+    set_property(TARGET ${target} APPEND PROPERTY
+      INTERFACE_LLVM_GENERATED_HEADER_TARGETS
+      "$<BUILD_LOCAL_INTERFACE:${target}>")
+  endif()
   if(LLVM_COMMON_DEPENDS)
     add_dependencies(${target} ${LLVM_COMMON_DEPENDS})
   endif()

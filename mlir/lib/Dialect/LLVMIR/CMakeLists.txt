@@ -38,9 +38,7 @@ add_mlir_dialect_library(MLIRLLVMDialect
   MLIRLLVMAllOpsIncGen
   MLIRLLVMOpsIncGen
   MLIRLLVMOpsShardGen
-  MLIRLLVMTranslationDialectInterfaceIncGen
   MLIRLLVMTypesIncGen
-  MLIROpenMPOpsIncGen
   intrinsics_gen
   MLIRLLVMConversionsIncGen
   MLIRLLVMIntrinsicConversionsIncGen
@@ -49,7 +47,13 @@ add_mlir_dialect_library(MLIRLLVMDialect
   BinaryFormat
   Core
 
-  LINK_LIBS PUBLIC
+  # LLVMAttrs.cpp includes mlir/Dialect/Ptr/IR/PtrEnums.h.
+  LINK_LIBS
+  PRIVATE
+  MLIRPtrOpsEnumsGen
+  MLIRTransformsDialectInterfaceIncGen
+  PUBLIC
+  MLIRViewLikeInterfaceIncGen
   MLIRCallInterfaces
   MLIRControlFlowInterfaces
   MLIRDataLayoutInterfaces
@@ -82,7 +86,6 @@ add_mlir_dialect_library(MLIRNVVMDialect
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/Dialect/LLVMIR
 
   DEPENDS
-  MLIRGPUCompilationAttrInterfacesIncGen
   MLIRNVVMOpsIncGen
   MLIRNVVMOpsShardGen
   MLIRNVVMConversionsIncGen
@@ -96,6 +99,7 @@ add_mlir_dialect_library(MLIRNVVMDialect
   TargetParser
 
   LINK_LIBS PUBLIC
+  MLIRLLVMTranslationDialectInterfaceIncGen
   MLIRIR
   MLIRLLVMDialect
   MLIRGPUDialect
@@ -121,6 +125,7 @@ add_mlir_dialect_library(MLIRROCDLDialect
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/Dialect/LLVMIR
 
   DEPENDS
+  # MLIRGPUCompilationInterfaces has no standalone logical library target.
   MLIRGPUCompilationAttrInterfacesIncGen
   MLIRROCDLOpsIncGen
   MLIRROCDLOpsShardGen
@@ -131,7 +136,10 @@ add_mlir_dialect_library(MLIRROCDLDialect
   AsmParser
   Core
 
-  LINK_LIBS PUBLIC
+  LINK_LIBS
+  PRIVATE
+  MLIRTransformsDialectInterfaceIncGen
+  PUBLIC
   MLIRIR
   MLIRLLVMDialect
   MLIRSideEffectInterfaces
@@ -165,6 +173,7 @@ add_mlir_dialect_library(MLIRXeVMDialect
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/Dialect/LLVMIR
 
   DEPENDS
+  # MLIRGPUCompilationInterfaces has no standalone logical library target.
   MLIRGPUCompilationAttrInterfacesIncGen
   MLIRXeVMOpsIncGen
   MLIRXeVMConversionsIncGen
@@ -176,6 +185,7 @@ add_mlir_dialect_library(MLIRXeVMDialect
   TargetParser
 
   LINK_LIBS PUBLIC
+  MLIRLLVMTranslationDialectInterfaceIncGen
   MLIRDialectUtils
   MLIRIR
   MLIRLLVMDialect

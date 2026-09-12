@@ -20,4 +20,3 @@ add_mlir_conversion_library(MLIRMemRefToSPIRV
   MLIRSupport
   MLIRTransformUtils
   )
-

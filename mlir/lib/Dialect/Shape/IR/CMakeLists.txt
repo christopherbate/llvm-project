@@ -11,7 +11,10 @@ add_mlir_dialect_library(MLIRShapeDialect
   DEPENDS
   MLIRShapeOpsIncGen
 
-  LINK_LIBS PUBLIC
+  LINK_LIBS
+  PRIVATE
+  MLIRBufferizableOpInterfaceIncGen
+  PUBLIC
   MLIRArithDialect
   MLIRCallInterfaces
   MLIRCastInterfaces

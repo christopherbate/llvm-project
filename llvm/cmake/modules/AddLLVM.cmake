@@ -554,6 +554,46 @@ function(set_windows_version_resource_properties name resource_file)
                "RC_PRODUCT_VERSION=\"${ARG_VERSION_STRING}\"")
 endfunction(set_windows_version_resource_properties)
 
+# Add build-tree-only public generated-header interfaces from explicit utility
+# dependencies. CMake propagates their HEADERS file sets through the normal
+# link interface, evaluating configuration-dependent link expressions itself.
+function(_llvm_link_public_generated_headers target)
+  set_property(TARGET ${target} APPEND PROPERTY
+    TRANSITIVE_COMPILE_PROPERTIES LLVM_GENERATED_HEADER_TARGETS)
+  foreach(dependency ${ARGN})
+    if(TARGET "${dependency}")
+      get_property(header_target TARGET "${dependency}" PROPERTY
+        INTERFACE_LLVM_GENERATED_HEADER_TARGETS)
+      if(header_target)
+        foreach(property LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+          set_property(TARGET ${target} APPEND PROPERTY ${property}
+            "${header_target}")
+        endforeach()
+      endif()
+    endif()
+  endforeach()
+endfunction()
+
+# Generated-header interface targets exist only in the build tree. Hide direct
+# links to them from both build-tree and install-tree exports while preserving
+# their normal link-interface behavior within this build.
+function(_llvm_wrap_build_local_generated_headers output)
+  set(result)
+  foreach(item IN LISTS ARGN)
+    set(is_header_target FALSE)
+    if(TARGET "${item}")
+      get_property(is_header_target TARGET "${item}" PROPERTY
+        INTERFACE_LLVM_GENERATED_HEADER_TARGETS)
+    endif()
+    if(is_header_target)
+      list(APPEND result "$<BUILD_LOCAL_INTERFACE:${item}>")
+    else()
+      list(APPEND result "${item}")
+    endif()
+  endforeach()
+  set(${output} "${result}" PARENT_SCOPE)
+endfunction()
+
 # llvm_add_library(name sources...
 #   SHARED;STATIC
 #     STATIC by default w/o BUILD_SHARED_LIBS.
@@ -595,11 +635,14 @@ endfunction(set_windows_version_resource_properties)
 #      candidate for inclusion into libLLVM.so.
 #   )
 function(llvm_add_library name)
+  set(obj_name "obj.${name}")
+  set(name_static)
   cmake_parse_arguments(ARG
     "MODULE;SHARED;STATIC;OBJECT;DISABLE_LLVM_LINK_LLVM_DYLIB;SONAME;NO_INSTALL_RPATH;COMPONENT_LIB;DISABLE_PCH_REUSE"
     "OUTPUT_NAME;PLUGIN_TOOL;ENTITLEMENTS;BUNDLE_PATH"
     "ADDITIONAL_HEADERS;PRECOMPILE_HEADERS;DEPENDS;LINK_COMPONENTS;LINK_LIBS;OBJLIBS"
     ${ARGN})
+  _llvm_wrap_build_local_generated_headers(ARG_LINK_LIBS ${ARG_LINK_LIBS})
   list(APPEND LLVM_COMMON_DEPENDS ${ARG_DEPENDS})
   list(APPEND LLVM_LINK_COMPONENTS ${ARG_LINK_COMPONENTS})
   if(ARG_ADDITIONAL_HEADERS)
@@ -643,7 +686,6 @@ function(llvm_add_library name)
   # Generate objlib
   if((ARG_SHARED AND ARG_STATIC) OR ARG_OBJECT)
     # Generate an obj library for both targets.
-    set(obj_name "obj.${name}")
     add_library(${obj_name} OBJECT EXCLUDE_FROM_ALL
       ${ALL_FILES}
       )
@@ -660,8 +702,6 @@ function(llvm_add_library name)
     list(APPEND objlibs ${obj_name})
 
     # Propagate include directories from our original target.
-    # TODO: Use $<COMPILE_ONLY:${name}> instead of this manual propagation
-    # when minimum required CMake version is 3.27 or higher.
     target_include_directories(${obj_name} SYSTEM
       INTERFACE $<TARGET_PROPERTY:${name},INTERFACE_SYSTEM_INCLUDE_DIRECTORIES>
       )
@@ -670,31 +710,8 @@ function(llvm_add_library name)
       PRIVATE $<TARGET_PROPERTY:${name},INCLUDE_DIRECTORIES>
       )
 
-    set_target_properties(${obj_name} PROPERTIES FOLDER "${subproject_title}/Object Libraries")
-    if(ARG_DEPENDS)
-      add_dependencies(${obj_name} ${ARG_DEPENDS})
-    endif()
-    # Treat link libraries like PUBLIC dependencies.  LINK_LIBS might
-    # result in generating header files.  Add a dependendency so that
-    # the generated header is created before this object library.
-    if(ARG_LINK_LIBS)
-      cmake_parse_arguments(LINK_LIBS_ARG
-        ""
-        ""
-        "PUBLIC;PRIVATE"
-        ${ARG_LINK_LIBS})
-      foreach(link_lib ${LINK_LIBS_ARG_PUBLIC})
-        if(LLVM_PTHREAD_LIB)
-          # Can't specify a dependence on -lpthread
-          if(NOT ${link_lib} STREQUAL ${LLVM_PTHREAD_LIB})
-            add_dependencies(${obj_name} ${link_lib})
-          endif()
-        else()
-          add_dependencies(${obj_name} ${link_lib})
-        endif()
-      endforeach()
-    endif()
-
+    set_target_properties(${obj_name} PROPERTIES
+      FOLDER "${subproject_title}/Object Libraries")
     if(ARG_DISABLE_LLVM_LINK_LLVM_DYLIB)
       target_compile_definitions(${obj_name} PRIVATE LLVM_BUILD_STATIC)
     endif()
@@ -730,6 +747,14 @@ function(llvm_add_library name)
     add_library(${name} SHARED ${ALL_FILES})
   else()
     add_library(${name} STATIC ${ALL_FILES})
+  endif()
+  # Only explicitly declared prerequisites belong to this library's public
+  # generated-header interface. LLVM_COMMON_DEPENDS is cumulative within a
+  # directory and may contain unrelated generators inherited from earlier
+  # declarations.
+  _llvm_link_public_generated_headers(${name} ${ARG_DEPENDS})
+  if(name_static)
+    _llvm_link_public_generated_headers(${name_static} ${ARG_DEPENDS})
   endif()
   set_target_properties(${name} PROPERTIES FOLDER "${subproject_title}/Libraries")
 
@@ -781,7 +806,7 @@ function(llvm_add_library name)
 
   set_output_directory(${name} BINARY_DIR ${LLVM_RUNTIME_OUTPUT_INTDIR} LIBRARY_DIR ${LLVM_LIBRARY_OUTPUT_INTDIR})
   # $<TARGET_OBJECTS> doesn't require compile flags.
-  if(NOT obj_name)
+  if(NOT TARGET ${obj_name})
     llvm_update_compile_flags(${name})
     llvm_update_pch(${name})
   else()
@@ -893,6 +918,14 @@ function(llvm_add_library name)
       ${lib_deps}
       ${llvm_libs}
       )
+  if(TARGET ${obj_name})
+    # A phony target materializes the generator-expression-evaluated list as
+    # build-order edges without adding provider libraries to the object graph.
+    set(header_target "llvm.headers.${obj_name}")
+    add_custom_target(${header_target} DEPENDS
+      "$<TARGET_PROPERTY:${name},LLVM_GENERATED_HEADER_TARGETS>")
+    add_dependencies(${obj_name} ${header_target})
+  endif()
 
   if(LLVM_COMMON_DEPENDS)
     add_dependencies(${name} ${LLVM_COMMON_DEPENDS})

@@ -8,6 +8,10 @@ add_mlir_dialect_library(MLIRUBDialect
   MLIRUBOpsIncGen
   MLIRUBOpsInterfacesIncGen
 
-  LINK_LIBS PUBLIC
+  LINK_LIBS
+  PRIVATE
+  MLIRConvertToLLVMInterfaceIncGen
+  MLIRTransformsDialectInterfaceIncGen
+  PUBLIC
   MLIRIR
   )

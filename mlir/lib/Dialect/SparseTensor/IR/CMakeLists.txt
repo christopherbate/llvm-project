@@ -44,7 +44,10 @@ add_mlir_dialect_library(MLIRSparseTensorDialect
   MLIRSparseTensorTypesIncGen
   MLIRSparseTensorInterfacesIncGen
 
-  LINK_LIBS PUBLIC
+  LINK_LIBS
+  PRIVATE
+  MLIRBufferizableOpInterfaceIncGen
+  PUBLIC
   MLIRArithDialect
   MLIRControlFlowInterfaces
   MLIRComplexDialect

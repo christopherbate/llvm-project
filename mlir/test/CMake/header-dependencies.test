@@ -1,0 +1,154 @@
+# RUN: rm -rf %t
+# RUN: split-file %s %t
+# RUN: "%cmake_exe" -S %t/valid -B %t/valid-build -G "%cmake_generator" \
+# RUN:   -DMLIR_DIR=%mlir_cmake_dir -DCMAKE_C_COMPILER=%host_cc \
+# RUN:   -DCMAKE_CXX_COMPILER=%host_cxx 2>&1 \
+# RUN:   | FileCheck %s --check-prefix=VALID
+# RUN: "%cmake_exe" --build %t/valid-build --target obj.HeaderConsumer --parallel 4
+# RUN: "%cmake_exe" --build %t/valid-build --target clean
+# RUN: "%cmake_exe" --build %t/valid-build --target obj.LinkConsumer --parallel 4
+# RUN: "%cmake_exe" --build %t/valid-build --target clean
+# RUN: "%cmake_exe" --build %t/valid-build --target SharedHeaderConsumer --parallel 4
+# RUN: "%cmake_exe" --build %t/valid-build --target clean
+# RUN: "%cmake_exe" --build %t/valid-build --target obj.PublicHeaderDownstream --parallel 4
+# RUN: "%cmake_exe" --build %t/valid-build --target clean
+# RUN: "%cmake_exe" --build %t/valid-build --target obj.PrivateHeaderDownstream --parallel 4
+# VALID: -- Generated header dependency checks passed
+
+#--- common.cmake
+find_package(MLIR REQUIRED CONFIG)
+list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}" "${LLVM_CMAKE_DIR}")
+include(TableGen)
+include(AddLLVM)
+include(AddMLIR)
+include(HandleLLVMOptions)
+set(LLVM_RUNTIME_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/bin)
+set(LLVM_LIBRARY_OUTPUT_INTDIR ${CMAKE_BINARY_DIR}/lib)
+
+foreach(target
+    Provider Base Conditional LinkOnly Disabled Plain InterfaceOnly
+    CycleA CycleB HeaderA HeaderB HeaderBase 3rdParty)
+  set(LLVM_COMMON_DEPENDS)
+  set(output ${CMAKE_CURRENT_BINARY_DIR}/${target}.h.inc)
+  if(target STREQUAL "Disabled" OR target STREQUAL "LinkOnly")
+    set(command ${CMAKE_COMMAND} -E false)
+  else()
+    set(command ${CMAKE_COMMAND} -E touch ${output})
+  endif()
+  add_custom_command(OUTPUT ${output} COMMAND ${command})
+  set(TABLEGEN_OUTPUT ${output})
+  add_public_tablegen_target(${target}IncGen)
+endforeach()
+add_custom_target(SourceGenerator COMMAND ${CMAKE_COMMAND} -E false)
+# Keep the fixture libraries from inheriting all preceding TableGen targets.
+set(LLVM_COMMON_DEPENDS)
+
+#--- valid/CMakeLists.txt
+cmake_minimum_required(VERSION 3.31)
+project(HeaderDependencies LANGUAGES C CXX)
+include(../common.cmake)
+
+add_library(Imported UNKNOWN IMPORTED)
+set_target_properties(Imported PROPERTIES
+  IMPORTED_LOCATION /absolute/libimported.a)
+add_library(ImportedAlias ALIAS Imported)
+
+# Consumers precede providers to exercise deferred forward resolution.
+add_mlir_library(LinkConsumer empty.cpp DISABLE_INSTALL
+  LINK_LIBS PlainProvider /absolute/libunused.a -lpthread ImportedAlias
+  PRIVATE ProviderAlias "$<$<BOOL:0>:DisabledProvider>"
+  PUBLIC "$<$<BOOL:1>:ConditionalProvider>" "$<LINK_ONLY:LinkOnlyProvider>"
+    "$<$<BOOL:1>:3rdPartyProvider>"
+  INTERFACE InterfaceOnlyProvider)
+add_mlir_library(CycleConsumer empty.cpp DISABLE_INSTALL
+  LINK_LIBS PRIVATE CycleA)
+add_mlir_library(HeaderConsumer empty.cpp DISABLE_INSTALL
+  LINK_LIBS PRIVATE HeaderAIncGen HeaderBIncGen HeaderBaseIncGen
+    "$<$<BOOL:0>:DisabledIncGen>")
+add_mlir_library(PostHocConsumer empty.cpp DISABLE_INSTALL)
+add_mlir_library(PostHocInterfaceConsumer empty.cpp DISABLE_INSTALL)
+add_mlir_library(SharedHeaderConsumer empty.cpp SHARED STANDALONE DISABLE_INSTALL
+  LINK_LIBS PRIVATE HeaderAIncGen HeaderBIncGen HeaderBaseIncGen)
+add_mlir_library(PublicHeaderConsumer empty.cpp DISABLE_INSTALL
+  LINK_LIBS PUBLIC HeaderAIncGen HeaderBIncGen HeaderBaseIncGen)
+add_mlir_library(PublicHeaderDownstream empty.cpp DISABLE_INSTALL
+  LINK_LIBS PRIVATE PublicHeaderConsumer)
+add_mlir_library(PrivateHeaderConsumer empty.cpp DISABLE_INSTALL
+  LINK_LIBS PRIVATE DisabledIncGen)
+add_mlir_library(PrivateHeaderDownstream empty.cpp DISABLE_INSTALL
+  LINK_LIBS PRIVATE PrivateHeaderConsumer)
+target_include_directories(SharedHeaderConsumer PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+target_compile_definitions(SharedHeaderConsumer PRIVATE CHECK_HEADER_HEADERS)
+target_include_directories(obj.HeaderConsumer PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+target_compile_definitions(obj.HeaderConsumer PRIVATE CHECK_HEADER_HEADERS)
+target_include_directories(obj.LinkConsumer PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+target_compile_definitions(obj.LinkConsumer PRIVATE CHECK_LINK_HEADERS)
+target_include_directories(obj.PublicHeaderDownstream PRIVATE
+  ${CMAKE_CURRENT_BINARY_DIR})
+target_compile_definitions(obj.PublicHeaderDownstream PRIVATE
+  CHECK_HEADER_HEADERS)
+
+add_mlir_library(Provider empty.cpp DISABLE_INSTALL
+  DEPENDS ProviderIncGen SourceGenerator
+  LINK_LIBS PUBLIC Base)
+add_library(ProviderAlias ALIAS Provider)
+add_mlir_library(Base empty.cpp DISABLE_INSTALL DEPENDS BaseIncGen)
+add_mlir_library(ConditionalProvider empty.cpp DISABLE_INSTALL
+  DEPENDS ConditionalIncGen)
+add_mlir_library(LinkOnlyProvider empty.cpp DISABLE_INSTALL
+  DEPENDS LinkOnlyIncGen)
+add_mlir_library(DisabledProvider empty.cpp DISABLE_INSTALL
+  DEPENDS DisabledIncGen)
+add_mlir_library(PlainProvider empty.cpp DISABLE_INSTALL
+  DEPENDS PlainIncGen)
+add_mlir_library(InterfaceOnlyProvider empty.cpp DISABLE_INSTALL
+  DEPENDS InterfaceOnlyIncGen)
+add_mlir_library(3rdPartyProvider empty.cpp DISABLE_INSTALL
+  DEPENDS 3rdPartyIncGen)
+
+# Mutual static-library links must not become strong target cycles.
+add_mlir_library(CycleA empty.cpp DISABLE_INSTALL
+  DEPENDS CycleAIncGen LINK_LIBS PRIVATE CycleB)
+add_mlir_library(CycleB empty.cpp DISABLE_INSTALL
+  DEPENDS CycleBIncGen LINK_LIBS CycleA)
+
+# Generated-header interface targets use ordinary link visibility and do not
+# introduce link artifacts or strong cycles.
+add_mlir_library(HeaderA empty.cpp DISABLE_INSTALL
+  DEPENDS HeaderAIncGen
+  LINK_LIBS PUBLIC HeaderBIncGen HeaderBase)
+add_library(HeaderAlias ALIAS HeaderA)
+add_mlir_library(HeaderB empty.cpp DISABLE_INSTALL
+  DEPENDS HeaderBIncGen LINK_LIBS PRIVATE HeaderAIncGen)
+add_mlir_library(HeaderBase empty.cpp DISABLE_INSTALL
+  DEPENDS HeaderBaseIncGen)
+
+mlir_target_link_libraries(PostHocConsumer PRIVATE ProviderAlias
+  INTERFACE InterfaceOnlyProvider)
+mlir_target_link_libraries(PostHocInterfaceConsumer INTERFACE InterfaceOnlyProvider)
+function(check_dependencies)
+  get_target_property(header_type HeaderAIncGen TYPE)
+  if(NOT header_type STREQUAL "INTERFACE_LIBRARY")
+    message(FATAL_ERROR "Unexpected generated-header target type: '${header_type}'")
+  endif()
+  message(STATUS "Generated header dependency checks passed")
+endfunction()
+cmake_language(DEFER CALL check_dependencies)
+
+#--- valid/empty.cpp
+#ifdef CHECK_HEADER_HEADERS
+#include "HeaderA.h.inc"
+#include "HeaderB.h.inc"
+#include "HeaderBase.h.inc"
+#endif
+#ifdef CHECK_LINK_HEADERS
+#include "Provider.h.inc"
+#include "Base.h.inc"
+#include "Conditional.h.inc"
+#include "Plain.h.inc"
+#include "3rdParty.h.inc"
+#endif
+void empty() {}
+
+#--- valid/Provider.td
+// Only configuration is under test.

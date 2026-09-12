@@ -12,7 +12,10 @@ add_mlir_dialect_library(MLIRTransformDialect
   MLIRTransformDialectAttributesIncGen
   MLIRTransformOpsIncGen
 
-  LINK_LIBS PUBLIC
+  LINK_LIBS
+  PRIVATE
+  MLIRConvertToLLVMInterfaceIncGen
+  PUBLIC
   MLIRCastInterfaces
   MLIRFunctionInterfaces
   MLIRIR

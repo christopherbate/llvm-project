@@ -14,3 +14,8 @@ set(LLVM_TARGET_DEFINITIONS BufferizationTypeInterfaces.td)
 mlir_tablegen(BufferizationTypeInterfaces.h.inc -gen-type-interface-decls)
 mlir_tablegen(BufferizationTypeInterfaces.cpp.inc -gen-type-interface-defs)
 add_mlir_dialect_tablegen_target(MLIRBufferizationTypeInterfacesIncGen)
+
+# BufferizableOpInterface.h includes both generated declarations.
+target_link_libraries(MLIRBufferizableOpInterfaceIncGen INTERFACE
+  MLIRBufferizationEnumsIncGen
+  MLIRBufferizationTypeInterfacesIncGen)

@@ -17,7 +17,16 @@ add_mlir_dialect_library(MLIRTensorDialect
   DEPENDS
   MLIRTensorOpsIncGen
 
-  LINK_LIBS PUBLIC
+  # The sources include generated interface definitions.
+  LINK_LIBS
+  PRIVATE
+  MLIRAlignmentAttrInterfaceIncGen
+  MLIRBufferizableOpInterfaceIncGen
+  MLIRRelayoutOpInterfaceIncGen
+  MLIRSubsetOpInterfaceIncGen
+  MLIRTransformInterfacesIncGen
+  PUBLIC
+  MLIRTilingInterfaceIncGen
   MLIRAffineDialect
   MLIRArithDialect
   MLIRArithUtils

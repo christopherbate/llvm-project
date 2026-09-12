@@ -51,7 +51,6 @@ add_mlir_dialect_library(MLIRSPIRVDialect
   MLIRSPIRVCanonicalizationIncGen
   MLIRSPIRVEnumAvailabilityIncGen
   MLIRSPIRVEnumsIncGen
-  MLIRSPIRVImageInterfacesIncGen
   MLIRSPIRVOpsIncGen
   MLIRSPIRVOpsShardGen
   MLIRSPIRVSerializationGen
@@ -59,6 +58,7 @@ add_mlir_dialect_library(MLIRSPIRVDialect
   intrinsics_gen
 
   LINK_LIBS PUBLIC
+  MLIRAlignmentAttrInterfaceIncGen
   MLIRControlFlowInterfaces
   MLIRFunctionInterfaces
   MLIRIR

@@ -19,6 +19,10 @@ mlir_tablegen(SPIRVEnumAvailability.cpp.inc -gen-spirv-enum-avail-defs)
 mlir_tablegen(SPIRVCapabilityImplication.inc -gen-spirv-capability-implication)
 add_mlir_dialect_tablegen_target(MLIRSPIRVEnumAvailabilityIncGen)
 
+# SPIRVEnums.h includes the generated enum availability declarations.
+target_link_libraries(MLIRSPIRVEnumsIncGen INTERFACE
+  MLIRSPIRVEnumAvailabilityIncGen)
+
 set(LLVM_TARGET_DEFINITIONS SPIRVOps.td)
 mlir_tablegen(SPIRVAvailability.h.inc -gen-avail-interface-decls)
 mlir_tablegen(SPIRVAvailability.cpp.inc -gen-avail-interface-defs)
